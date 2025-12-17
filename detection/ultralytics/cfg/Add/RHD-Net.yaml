@@ -1,0 +1,72 @@
+# YOLOv8n-CAD-FPN-Light-RWKV-Adapted: Lightweight P3-P5 with RWKV, Coordinate Attention and Differential Path
+
+# Parameters
+nc: 80 # number of classes
+scales: # model compound scaling constants
+  # [depth, width, max_channels]
+  n: [0.33, 0.25, 1024]
+  s: [0.33, 0.50, 1024]
+  m: [0.67, 0.75, 768]
+  l: [1.00, 1.00, 512]
+  x: [1.00, 1.25, 512]
+
+# YOLOv8 backbone (Standard C2f modules)
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]                   # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]                  # 1-P2/4
+  - [-1, 3, C2f, [128, True]]                   # 2
+  - [-1, 1, Conv, [256, 3, 2]]                  # 3-P3/8
+  - [-1, 6, C2f, [256, True]]                   # 4 (save P3)
+  - [-1, 1, Conv, [512, 3, 2]]                  # 5-P4/16
+  - [-1, 6, C2f, [512, True]]                   # 6 (save P4)
+  - [-1, 1, Conv, [1024, 3, 2]]                 # 7-P5/32
+  - [-1, 3, C2f, [1024, True]]                  # 8
+  - [-1, 1, SPPF, [1024, 5]]                    # 9 (save P5)
+
+# YOLOv8 head with Dual Differential Path
+head:
+  # --- Part 1: Standard FPN/PAN Neck with C2-RWKV Enhancement ---
+  # TrainableSpatialRWKV_C2fLike acts as the C2-RWKV module.
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]  # 10
+  - [[-1, 6], 1, Concat, [1]]                   # 11
+  - [-1, 3, TrainableSpatialRWKV_C2fLike, [512, False, "DEFAULT_C2F_RWKV"]] # 12: P4_neck_fused (C2-RWKV)
+
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]  # 13
+  - [[-1, 4], 1, Concat, [1]]                   # 14
+  - [-1, 3, TrainableSpatialRWKV_C2fLike, [256, False, "DEFAULT_C2F_RWKV"]] # 15: P3_neck_out (C2-RWKV) [SAVE]
+
+  - [-1, 1, Conv, [256, 3, 2]]                  # 16
+  - [[-1, 12], 1, Concat, [1]]                  # 17
+  - [-1, 3, TrainableSpatialRWKV_C2fLike, [512, False, "DEFAULT_C2F_RWKV"]] # 18: P4_neck_out (C2-RWKV) [SAVE]
+
+  - [-1, 1, Conv, [512, 3, 2]]                  # 19
+  - [[-1, 9], 1, Concat, [1]]                   # 20
+  - [-1, 3, TrainableSpatialRWKV_C2fLike, [1024, False, "DEFAULT_C2F_RWKV"]]# 21: P5_neck_out (C2-RWKV) [SAVE]
+
+
+  # --- Part 2: BDFM (Bi-scale Differential Feature Fusion Module) ---
+  
+  # BDFM Sub-Path 1: P5 vs P4 (at P4 scale)
+  - [18, 1, Simplified_SCC, [512]]              # 22: Pre-process P4_neck_out
+  - [21, 1, Simplified_SCC, [512]]              # 23: Pre-process P5_neck_out
+  - [23, 1, nn.Upsample, [None, 2, 'nearest']]  # 24: Upsample P5_proc
+  - [[22, 24], 1, AbsDifference, []]            # 25: Diff_feat_1_raw (ch=512)
+  - [-1, 1, CBAM, [128]]                        # 26: Diff_feat_1_attn
+
+  # BDFM Sub-Path 2: P4 vs P3 (at P4 scale)
+  - [18, 1, Simplified_SCC, [256]]              # 27: Pre-process P4_neck_out (ch=256)
+  - [15, 1, Simplified_SCC, [256]]              # 28: Pre-process P3_neck_out (ch=256)
+  - [28, 1, nn.MaxPool2d, [2, 2]]               # 29: Downsample P3_proc
+  - [[27, 29], 1, AbsDifference, []]            # 30: Diff_feat_2_raw (ch=256)
+  - [-1, 1, CBAM, [64]]                         # 31: Diff_feat_2_attn
+
+  # BDFM Final Fusion
+  - [[26, 31], 1, Concat, [1]]                  # 32: Concat two attended diff features (ch=768)
+  - [-1, 1, Conv, [512, 1, 1]]                  # 33: Final_Differential_Feature (ch=512) [SAVE]
+
+
+  # --- Part 3: Detect Head (Detect_HybridRefinedASFF8 Logic, represented as Detect_HAFM) ---
+  # Inputs: [P3_neck_out (L15), P4_neck_out (L18), P5_neck_out (L21), Final_Diff_feat (L33)]
+  # Detect_HAFM contains the Asymmetric Branch, Large-Kernel Branch, and BiFPN Fusion logic.
+  - [[15, 18, 21, 33], 1, Detect_HAFM, [nc]] # 34: Detect Head (Detect_HAFM Logic)

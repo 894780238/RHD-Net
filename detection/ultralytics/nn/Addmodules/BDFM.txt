@@ -1,0 +1,71 @@
+FUNCTION Simplified_SCC(x, c_out):
+    c_hidden = c_out / 2
+    
+    // Branch 1: 1x1 convolution
+    out1 = Conv(x, c_hidden, kernel_size=1, stride=1) 
+    
+    // Branch 2: 3x3 convolution
+    out3 = Conv(x, c_hidden, kernel_size=3, stride=1, padding=1)
+    
+    // Contacct (along the channel dimension)
+    RETURN Concatenate(out1, out3, dim=1) // Output channels = c_hidden + c_hidden = c_out
+END FUNCTION
+
+FUNCTION AbsDifference(x1, x2):
+    diff = x1 - x2
+    RETURN AbsoluteValue(diff)
+END FUNCTION
+
+// BDFM (Bi-scale Differential Feature Fusion Module)
+
+FUNCTION BDFM_Forward(P3_feat, P4_feat, P5_feat):
+    // ----------------------------------------------------
+    // --- Path 1: P5 vs P4 Difference (at P4 scale) ---
+    // ----------------------------------------------------
+    
+    // 22: Pre-process P4_neck_out (512 channels)
+    P4_proc_1 = Simplified_SCC(P4_feat, c_out=512) 
+    
+    // 23: Pre-process P5_neck_out (512 channels)
+    P5_proc_1 = Simplified_SCC(P5_feat, c_out=512) 
+    
+    // 24: Upsample processed P5 to P4's spatial size
+    P5_upsampled = Upsample(P5_proc_1, scale_factor=2, mode='nearest') 
+    
+    // 25: Calculate Absolute Difference (Output ch=512)
+    Diff_feat_1_raw = AbsDifference(P4_proc_1, P5_upsampled) 
+    
+    // 26: Apply CBAM Attention (Enhance the P5-P4 differential feature)
+    Diff_feat_1_attn = CBAM(Diff_feat_1_raw, internal_channels=128) 
+
+    // ----------------------------------------------------
+    // --- Path 2: P4 vs P3 Difference (at P4 scale) ---
+    // ----------------------------------------------------
+    
+    // 27: Pre-process P4_neck_out (256 channels)
+    P4_proc_2 = Simplified_SCC(P4_feat, c_out=256) 
+    
+    // 28: Pre-process P3_neck_out (256 channels)
+    P3_proc_2 = Simplified_SCC(P3_feat, c_out=256) 
+    
+    // 29: Downsample processed P3 to P4's spatial size (2x downsampling)
+    P3_downsampled = MaxPool2d(P3_proc_2, kernel_size=2, stride=2) 
+    
+    // 30: Calculate Absolute Difference (Output ch=256)
+    Diff_feat_2_raw = AbsDifference(P4_proc_2, P3_downsampled) 
+    
+    // 31: Apply CBAM Attention (Enhance the P4-P3 differential feature)
+    Diff_feat_2_attn = CBAM(Diff_feat_2_raw, internal_channels=64) 
+
+    // ----------------------------------------------------
+    // --- Concatenate and Refine (Final Output) ---
+    // ----------------------------------------------------
+
+    // 32: Concat the two attended diff features (512 + 256 = 768 channels)
+    Concatenated_Diff_feat = Concat([Diff_feat_1_attn, Diff_feat_2_attn], dim=1) 
+    
+    // 33: Refine and reduce channels with a 1x1 Conv (Output ch=512)
+    Final_Differential_Feature = Conv(Concatenated_Diff_feat, output_channels=512, kernel_size=1, stride=1) 
+
+    RETURN Final_Differential_Feature
+END FUNCTION

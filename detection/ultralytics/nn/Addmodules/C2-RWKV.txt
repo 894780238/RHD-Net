@@ -1,0 +1,75 @@
+// C2-RWKV (C2f-like RWKV Inspired Module)
+// Replaces the C2f structure using stacked RWKV-inspired processing blocks.
+
+FUNCTION C2-RWKV_Forward(x, c_in, c_out, n, shortcut, rwkv_config):
+    // ----------------------------------------------------
+    // Step 1: Initial Projection
+    // ----------------------------------------------------
+    d_model = c_out * rwkv_config.model_dim_factor // Internal working dimension
+    x_proj = Conv_1x1(x, d_model) // (B, d_model, H, W)
+
+    // ----------------------------------------------------
+    // Step 2: Stack n Processing Blocks (RWKV-Like Blocks)
+    // ----------------------------------------------------
+    x_processed = x_proj
+    FOR i = 1 TO n:
+        x_processed = RWKV_Processing_Block_Forward(x_processed, rwkv_config) // (B, d_model, H, W)
+    
+    // ----------------------------------------------------
+    // Step 3: Output Projection and Residual Connection
+    // ----------------------------------------------------
+    // Output Projection (if d_model != c_out)
+    out = Conv_1x1(x_processed, c_out) 
+    
+    // Optional Residual Connection
+    IF shortcut IS TRUE AND x.shape == out.shape:
+        RETURN x + out
+    ELSE:
+        RETURN out
+END FUNCTION
+
+// RWKV_Processing_Block_Forward
+// Contains a sequence of RWKV-inspired Spatial Mix (Time Mix) and Channel Mix, both with residual links.
+
+FUNCTION RWKV_Processing_Block_Forward(x, config):
+    channels = x.channels
+
+    // ----------------------------------------------------
+    // A. Spatial Mix (TM) - Analogous to RWKV's Time-Mixing
+    // ----------------------------------------------------
+    identity_tm = x
+    x_tm_norm_act = SiLU(BatchNorm2d(x)) 
+
+    // 1. Receptance Gate (r_tm)
+    r_tm = Conv_1x1(x_tm_norm_act, channels, act=Sigmoid)
+    
+    // 2. Key-like Spatial Mix (k_tm) - Spatial information aggregation using depthwise convolution
+    spatial_k = config.spatial_kernel_size
+    groups = channels / config.spatial_groups_factor
+    k_tm = Conv_Spatial_Grouped(x_tm_norm_act, kernel_size=spatial_k, groups=groups) 
+
+    // 3. Residual Fusion (R gates K)
+    x_after_tm = identity_tm + (r_tm * k_tm)
+
+    // ----------------------------------------------------
+    // B. Channel Mix (CM) - Analogous to RWKV's FFN / Channel-Mixing
+    // ----------------------------------------------------
+    identity_cm = x_after_tm
+    x_cm_norm_act = SiLU(BatchNorm2d(x_after_tm))
+
+    // 1. Key Projection
+    ffn_exp = config.ffn_expansion_factor
+    ffn_hidden_c = channels * ffn_exp
+    k_cm = Conv_1x1(x_cm_norm_act, ffn_hidden_c) 
+    
+    // 2. Value Generation (K -> Activation -> V)
+    v_cm = Conv_1x1(SiLU(k_cm), channels) 
+    
+    // 3. Receptance Gate (r_cm_gate)
+    r_cm_gate = Conv_1x1(x_cm_norm_act, channels, act=Sigmoid)
+
+    // 4. Residual Fusion (R gates V)
+    x_after_cm = identity_cm + (r_cm_gate * v_cm)
+
+    RETURN x_after_cm
+END FUNCTION

@@ -1,0 +1,79 @@
+// HAFM (Hybrid Attentive Fusion Module)
+// Input: 
+//   P3_in
+//   P4_in
+//   P5_in
+
+FUNCTION HAFM(P3_in, P4_in, P5_in):
+    // ----------------------------------------------------
+    // Step 1: Asymmetric Branch Enhancement
+    // Objective: To perform feature extraction and information recombination using an efficient asymmetric convolution structure.
+    // ----------------------------------------------------
+    P3_asym = Asymmetric_Branch_Forward(P3_in) 
+    P4_asym = Asymmetric_Branch_Forward(P4_in)
+    P5_asym = Asymmetric_Branch_Forward(P5_in)
+
+    Asymmetric_enhanced_features = [P3_asym, P4_asym, P5_asym]
+
+    // ----------------------------------------------------
+    // Step 2: Large-Kernel Branch Refinement
+    // Objective: To introduce large-kernel multi-scale perception and residual connections for refinement, building upon Asymmetric enhancement.
+    // ----------------------------------------------------
+    
+    // For each Asymmetrically Enhanced feature, apply the Large-Kernel Branch module.
+    P3_lkb = Large_Kernel_Branch_Forward(P3_asym)
+    P4_lkb = Large_Kernel_Branch_Forward(P4_asym)
+    P5_lkb = Large_Kernel_Branch_Forward(P5_asym)
+
+    Large_Kernel_refined_features = [P3_lkb, P4_lkb, P5_lkb]
+
+    // ----------------------------------------------------
+    // Step 3: BiFPN Fusion
+    // Objective: To fuse the enhanced multi-scale features through the BiFPN structure using weighted, bidirectional fusion.
+    // ----------------------------------------------------
+    
+    Fused_features = BiFPN_Fusion(Large_Kernel_refined_features)
+    
+    // Fused_features = [P3_out_fused, P4_out_fused, P5_out_fused]
+    
+    RETURN Fused_features 
+END FUNCTION
+
+// Large-Kernel Branch
+// Enhance features using MultiScale Attention (incorporating Large-Kernel Decomposition) and add residual connections.
+
+FUNCTION Large_Kernel_Branch_Forward(x, c_in, c_out):
+    x_enhanced = MultiScaleAttention(x)
+    x_residual = x + x_enhanced
+    IF c_in != c_out:
+        RETURN Conv_1x1(x_residual, c_out)
+    ELSE:
+        RETURN x_residual
+END FUNCTION
+
+FUNCTION MultiScaleAttention(x):
+     x_5x5 = DWConv_5x5(x)
+     x_7x1 = DWConv_7x1(DWConv_1x7(x_5x5))
+     x_11x1 = DWConv_11x1(DWConv_1x11(x_5x5))
+     fused = x + x_5x5 + x_7x1 + x_11x1
+     RETURN Conv_1x1(fused)
+END FUNCTION
+
+// Asymmetric Branch
+
+FUNCTION Asymmetric_Branch_Forward(x, c_in, c_out):
+    c_main = c_in / 2    
+    c_split = c_main / 2 
+    x_main_proj = Conv_1x1(x, c_main)
+    (x1, x_others) = Split(x_main_proj, num_splits=2, dim=1) // x1: c_split, x_others: c_split
+ 
+    x2a = Conv_3x1(x_others)
+    x2b = Conv_1x3(x_others)
+
+    x_pw_expanded = Conv_1x1(x_others, c_split * 1.5)
+    x_pw = Conv_1x1(x_pw_expanded, c_split)
+
+    out_concatenated = Concatenate([x1, x2a, x2b, x_pw], dim=1) 
+
+    RETURN Conv_1x1(out_concatenated, c_out)
+END FUNCTION
